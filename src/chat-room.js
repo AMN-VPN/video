@@ -1,198 +1,158 @@
-const db = new Dexie('voiceApp');
-db.version(1).stores({
-    voices: '++id, voiceId, blob, timestamp, roomCode, userEmail, userAvatar, userName'  // اضافه کردن userName
-});
-
-let peer = null;
-let connections = [];
-let currentRoom = null;
-
-document.addEventListener('DOMContentLoaded', async () => {
-    const roomCode = localStorage.getItem('currentRoomCode');
-    const isJoining = window.location.search.includes('join');
-    
-    if (!roomCode) {
-        window.location.href = 'index.html';
-        return;
+class VideoCall {
+    constructor() {
+        this.localStream = null;
+        this.remoteStream = null;
+        this.peerConnection = null;
     }
 
-    document.getElementById('roomCodeDisplay').textContent = roomCode;
-    currentRoom = roomCode;
-    
-    // اول اتصال را برقرار می‌کنیم
-    initializePeer(roomCode, !isJoining);
-    
-    // سپس وویس‌ها را بازیابی می‌کنیم
-    await loadExistingRecordings(roomCode);
-    
-    // تنظیم دکمه‌های ضبط صدا
-    const recordButton = document.getElementById('recordButton');
-    const stopButton = document.getElementById('stopButton');
-    const leaveButton = document.getElementById('leaveRoom');
-
-    recordButton.onclick = () => voiceManager.startRecording();
-    stopButton.onclick = () => voiceManager.stopRecording();
-    
-    leaveButton.onclick = () => {
-        localStorage.removeItem('currentRoomCode');
-        if(peer) {
-            peer.destroy();
-        }
-        connections.forEach(conn => conn.close());
-        window.location.href = 'index.html';
-    };
-
-    const startVideoCallBtn = document.getElementById('startVideoCall');
-    const endVideoCallBtn = document.getElementById('endVideoCall');
-    
-    if(startVideoCallBtn && endVideoCallBtn) {
-        startVideoCallBtn.onclick = () => {
-            if(window.videoCall) {
-                window.videoCall.startCall();
-            }
-        };
+    initializeButtons() {
+        const startButton = document.getElementById('startVideoCall');
+        const endButton = document.getElementById('endVideoCall');
         
-        endVideoCallBtn.onclick = () => {
-            if(window.videoCall) {
-                window.videoCall.endCall();
-            }
-        };
+        if(startButton) startButton.onclick = () => this.startCall();
+        if(endButton) endButton.onclick = () => this.endCall();
     }
-});
-function initializePeer(roomCode, isCreator) {
-    const peerId = isCreator ? roomCode : `${roomCode}-${Date.now()}`;
-    
-    peer = new Peer(peerId, {
-        config: { iceServers: CONFIG.STUN_SERVERS }
-    });
 
-    peer.on('open', id => {
-        console.log('Peer connection established:', id);
-        if (!isCreator) {
-            const conn = peer.connect(roomCode);
-            setupConnection(conn);
+    async startCall() {
+        try {
+            this.localStream = await navigator.mediaDevices.getUserMedia({ 
+                video: true, 
+                audio: true 
+            });
+            
+            document.getElementById('localVideo').srcObject = this.localStream;
+            document.getElementById('videoContainer').style.display = 'flex';
+            
+            this.peerConnection = new RTCPeerConnection({
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' }
+                ]
+            });
+
+            // اضافه کردن مسیریاب‌های ICE
+            this.peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    connections.forEach(conn => {
+                        conn.send({
+                            type: 'ice-candidate',
+                            candidate: event.candidate
+                        });
+                    });
+                }
+            };
+
+            // نمایش استریم دریافتی
+            this.peerConnection.ontrack = (event) => {
+                document.getElementById('remoteVideo').srcObject = event.streams[0];
+            };
+
+            // اضافه کردن تراک‌های محلی
+            this.localStream.getTracks().forEach(track => {
+                this.peerConnection.addTrack(track, this.localStream);
+            });
+
+            const offer = await this.peerConnection.createOffer();
+            await this.peerConnection.setLocalDescription(offer);
+
+            connections.forEach(conn => {
+                conn.send({
+                    type: 'video-offer',
+                    offer: offer
+                });
+            });
+
+        } catch (error) {
+            console.error('خطا در شروع تماس:', error);
         }
-    });
+    }
 
-    peer.on('connection', conn => {
-        setupConnection(conn);
-    });
-}
+    async handleVideoOffer(offer, conn) {
+        try {
+            this.localStream = await navigator.mediaDevices.getUserMedia({ 
+                video: true, 
+                audio: true 
+            });
+            
+            document.getElementById('localVideo').srcObject = this.localStream;
+            document.getElementById('videoContainer').style.display = 'flex';
 
-function setupConnection(conn) {
-    if (!conn) return;
-    
-    connections = connections.filter(c => c.peer !== conn.peer);
-    connections.push(conn);
-    
-    conn.on('open', async () => {
-        console.log('Connection opened with:', conn.peer);
-        await syncExistingMessages(conn);
-    });
+            this.peerConnection = new RTCPeerConnection({
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' }
+                ]
+            });
 
-    const videoCall = new VideoCall();
+            this.peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    conn.send({
+                        type: 'ice-candidate',
+                        candidate: event.candidate
+                    });
+                }
+            };
 
-    conn.on('data', async (data) => {
-        if (data.type === 'video-offer') {
-            try {
-                await videoCall.handleVideoOffer(data.offer, conn);
-            } catch (error) {
-                console.log('خطا در پردازش درخواست تماس تصویری:', error);
+            this.peerConnection.ontrack = (event) => {
+                document.getElementById('remoteVideo').srcObject = event.streams[0];
+            };
+
+            this.localStream.getTracks().forEach(track => {
+                this.peerConnection.addTrack(track, this.localStream);
+            });
+
+            await this.peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+            const answer = await this.peerConnection.createAnswer();
+            await this.peerConnection.setLocalDescription(answer);
+
+            conn.send({
+                type: 'video-answer',
+                answer: answer
+            });
+
+        } catch (error) {
+            console.error('خطا در پاسخ به تماس:', error);
+        }
+    }
+
+    async handleVideoAnswer(answer) {
+        try {
+            await this.peerConnection.setRemoteDescription(answer)
+        } catch (error) {
+            console.error('خطا در دریافت پاسخ تماس:', error)
+        }
+    }
+
+    async handleIceCandidate(candidate) {
+        try {
+            if (this.peerConnection) {
+                await this.peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
             }
-        } 
-        else if (data.type === 'video-answer') {
-            await videoCall.handleVideoAnswer(data.answer);
+        } catch (error) {
+            console.error('خطا در افزودن ICE candidate:', error);
         }
-        else if (data.type === 'end-call') {
-            videoCall.endCall();
+    }
+
+    endCall() {
+        if (this.localStream) {
+            this.localStream.getTracks().forEach(track => track.stop());
         }
-        else if (data.type === 'audio') {
-            const audioBlob = new Blob([data.audioData], { type: 'audio/webm' });
-            displayRecording(
-                URL.createObjectURL(audioBlob),
-                true,
-                data.timestamp,
-                data.voiceId,
-                data.userEmail,
-                data.userAvatar,
-                data.userName
-            );
+        if (this.peerConnection) {
+            this.peerConnection.close();
         }
-    });
-}
-async function syncExistingMessages(conn) {
-    const voices = await db.voices
-        .where('roomCode')
-        .equals(currentRoom)
-        .toArray();
-        
-    for (let voice of voices) {
-        const arrayBuffer = await voice.blob.arrayBuffer();
-        conn.send({
-            type: 'audio',
-            audioData: arrayBuffer,
-            timestamp: voice.timestamp,
-            voiceId: voice.voiceId,
-            userEmail: voice.userEmail
+
+        document.getElementById('videoContainer').style.display = 'none';
+        document.getElementById('startVideoCall').style.display = 'block';
+        document.getElementById('endVideoCall').style.display = 'none';
+
+        connections.forEach(conn => {
+            if (conn.open) {
+                conn.send({
+                    type: 'end-call'
+                });
+            }
         });
     }
 }
-
-async function loadExistingRecordings(roomCode) {
-    console.log('Loading recordings for room:', roomCode);
-    const recordings = await db.voices
-        .where('roomCode')
-        .equals(roomCode)
-        .reverse()
-        .toArray();
-    
-    document.getElementById('recordings').innerHTML = '';
-    
-    recordings.forEach(recording => {
-        const isCurrentUser = recording.userEmail === localStorage.getItem('userEmail');
-        const userAvatar = isCurrentUser ? 
-            localStorage.getItem('userAvatar') : 
-            recording.userAvatar || defaultAvatar;
-
-        displayRecording(
-            URL.createObjectURL(recording.blob),
-            !isCurrentUser,
-            recording.timestamp,
-            recording.voiceId,
-            recording.userEmail,
-            userAvatar
-        );
-    });
-}
-
-function displayRecording(audioUrl, isRemote, timestamp, voiceId, userEmail, userAvatar, userName) {
-    const recordingItem = document.createElement('div');
-    recordingItem.className = 'recording-item';
-    recordingItem.setAttribute('data-voice-id', voiceId);
-
-    const avatar = document.createElement('img');
-    avatar.className = 'recording-avatar';
-    avatar.src = userAvatar || defaultAvatar;
-    avatar.alt = 'تصویر پروفایل';
-
-    const content = document.createElement('div');
-    content.className = 'recording-content';
-
-    const audio = document.createElement('audio');
-    audio.src = audioUrl;
-    audio.controls = true;
-
-    const info = document.createElement('div');
-    info.innerHTML = `
-        <p>${isRemote ? 'دریافتی از: ' : 'ضبط شده توسط: '}<strong>${userName}</strong></p>
-        <small>${new Date(timestamp).toLocaleString('fa-IR')}</small>
-    `;
-
-    content.appendChild(audio);
-    content.appendChild(info);
-    
-    recordingItem.appendChild(avatar);
-    recordingItem.appendChild(content);
-    
-    document.getElementById('recordings').insertBefore(recordingItem, document.getElementById('recordings').firstChild);
-}
+// ساخت یک نمونه گلوبال
+window.videoCall = new VideoCall();const videoCall = new VideoCall();
