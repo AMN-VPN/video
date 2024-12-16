@@ -94,7 +94,11 @@ function setupConnection(conn) {
 
     conn.on('data', async (data) => {
         if (data.type === 'video-offer') {
-            await videoCall.handleVideoOffer(data.offer, conn);
+            try {
+                await videoCall.handleVideoOffer(data.offer, conn);
+            } catch (error) {
+                console.log('خطا در پردازش درخواست تماس تصویری:', error);
+            }
         } 
         else if (data.type === 'video-answer') {
             await videoCall.handleVideoAnswer(data.answer);
@@ -114,8 +118,8 @@ function setupConnection(conn) {
                 data.userName
             );
         }
-    });}
-
+    });
+}
 async function syncExistingMessages(conn) {
     const voices = await db.voices
         .where('roomCode')
