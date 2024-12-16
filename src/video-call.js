@@ -14,76 +14,98 @@ class VideoCall {
     }
 
     async startCall() {
-        console.log('Starting video call...');
         try {
-            this.localStream = await navigator.mediaDevices.getUserMedia({ 
-                video: true, 
-                        audio: true 
+            // اول فقط درخواست دسترسی به دوربین میکنیم
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                video: {
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 }
+                },
+                audio: true
+            });
+        
+            this.localStream = stream;
+            const localVideo = document.getElementById('localVideo');
+            if(localVideo) {
+                localVideo.srcObject = stream;
+            }
+
+            document.getElementById('videoContainer').style.display = 'flex';
+            document.getElementById('startVideoCall').style.display = 'none';
+            document.getElementById('endVideoCall').style.display = 'block';
+
+            // بقیه کد تماس...
+        
+            // ایجاد اتصال WebRTC
+            this.peerConnection = new RTCPeerConnection({
+                iceServers: CONFIG.STUN_SERVERS
+            })
+
+            // اضافه کردن track های محلی
+            this.localStream.getTracks().forEach(track => {
+                this.peerConnection.addTrack(track, this.localStream)
+            })
+
+            // مدیریت track های دریافتی
+            this.peerConnection.ontrack = (event) => {
+                document.getElementById('remoteVideo').srcObject = event.streams[0]
+            }
+
+            // ارسال پیشنهاد تماس به peer دیگر
+            const offer = await this.peerConnection.createOffer()
+            await this.peerConnection.setLocalDescription(offer)
+
+            // ارسال offer از طریق اتصال موجود
+            connections.forEach(conn => {
+                if (conn.open) {
+                    conn.send({
+                        type: 'video-offer',
+                        offer: offer
                     })
-            
-                    document.getElementById('localVideo').srcObject = this.localStream
+                }
+            })
+        
+        } catch (error) {
+            if (error.name === 'NotFoundError') {
+                alert('لطفا مطمئن شوید که دوربین و میکروفون به سیستم متصل هستند');
+            } else if (error.name === 'NotAllowedError') {
+                alert('لطفا دسترسی به دوربین و میکروفون را تایید کنید');
+            } else {
+                alert('خطا در برقراری تماس تصویری');
+            }
+            console.error('Error accessing media devices:', error);
+        }
+    }
+            async handleVideoOffer(offer, conn) {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ 
+                        video: {
+                            width: { ideal: 1280 },
+                            height: { ideal: 720 },
+                            facingMode: "user"
+                        },
+                        audio: true
+                    })
+
+                    this.localStream = stream
+                    const localVideo = document.getElementById('localVideo')
+                    if(localVideo) {
+                        localVideo.srcObject = stream
+                    }
+
                     document.getElementById('videoContainer').style.display = 'flex'
                     document.getElementById('startVideoCall').style.display = 'none'
                     document.getElementById('endVideoCall').style.display = 'block'
 
-                    // ایجاد اتصال WebRTC
                     this.peerConnection = new RTCPeerConnection({
                         iceServers: CONFIG.STUN_SERVERS
                     })
 
-                    // اضافه کردن track های محلی
-                    this.localStream.getTracks().forEach(track => {
-                        this.peerConnection.addTrack(track, this.localStream)
+                    stream.getTracks().forEach(track => {
+                        this.peerConnection.addTrack(track, stream)
                     })
 
-                    // مدیریت track های دریافتی
-                    this.peerConnection.ontrack = (event) => {
-                        document.getElementById('remoteVideo').srcObject = event.streams[0]
-                    }
-
-                    // ارسال پیشنهاد تماس به peer دیگر
-                    const offer = await this.peerConnection.createOffer()
-                    await this.peerConnection.setLocalDescription(offer)
-
-                    // ارسال offer از طریق اتصال موجود
-                    connections.forEach(conn => {
-                        if (conn.open) {
-                            conn.send({
-                                type: 'video-offer',
-                                offer: offer
-                            })
-                        }
-                    })
-
-                } catch (error) {
-                    console.error('خطا در شروع تماس تصویری:', error)
-                    alert('خطا در دسترسی به دوربین و میکروفون')
-                }
-            }
-
-            async handleVideoOffer(offer, conn) {
-                try {
-                    this.peerConnection = new RTCPeerConnection({
-                        iceServers: CONFIG.STUN_SERVERS
-                    })
-
-                    this.localStream = await navigator.mediaDevices.getUserMedia({ 
-                        video: true, 
-                        audio: true 
-                    })
-
-                    document.getElementById('localVideo').srcObject = this.localStream
-                    document.getElementById('videoContainer').style.display = 'flex'
-
-                    this.localStream.getTracks().forEach(track => {
-                        this.peerConnection.addTrack(track, this.localStream)
-                    })
-
-                    this.peerConnection.ontrack = (event) => {
-                        document.getElementById('remoteVideo').srcObject = event.streams[0]
-                    }
-
-                    await this.peerConnection.setRemoteDescription(offer)
+                    await this.peerConnection.setRemoteDescription(new RTCSessionDescription(offer))
                     const answer = await this.peerConnection.createAnswer()
                     await this.peerConnection.setLocalDescription(answer)
 
@@ -94,9 +116,11 @@ class VideoCall {
 
                 } catch (error) {
                     console.error('خطا در پاسخ به تماس تصویری:', error)
+                    if (error.name === 'NotFoundError') {
+                        alert('دوربین یا میکروفون در دسترس نیست')
+                    }
                 }
             }
-
             async handleVideoAnswer(answer) {
                 try {
                     await this.peerConnection.setRemoteDescription(answer)
